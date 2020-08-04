@@ -3,11 +3,13 @@
 import unittest
 from unittest.mock import Mock
 import time
+import base64
 
 import dns.rcode
 import dns.tsig
 import dns.tsigkeyring
 import dns.message
+import dns.rdtypes.ANY.TKEY
 from dns.rdatatype import RdataType
 from dns.rdataclass import RdataClass
 
@@ -98,10 +100,11 @@ class TSIGTestCase(unittest.TestCase):
         gssapi_context_mock.verify_signature.side_effect = verify_signature
 
         # create the key and add it to the keyring
-        key = dns.tsig.Key('gsstsigtest', gssapi_context_mock, 'gss-tsig')
+        keyname = 'gsstsigtest'
+        key = dns.tsig.Key(keyname, gssapi_context_mock, 'gss-tsig')
         ctx = dns.tsig.get_context(key)
         self.assertEqual(ctx.name, 'gss-tsig')
-        gsskeyname = dns.name.from_text('gsstsigtest')
+        gsskeyname = dns.name.from_text(keyname)
         keyring[gsskeyname] = key
 
         # make sure we can get the keyring (no exception == success)
@@ -115,18 +118,54 @@ class TSIGTestCase(unittest.TestCase):
         gssapi_context_mock.verify_signature.assert_called()
         self.assertEqual(gssapi_context_mock.verify_signature.call_count, 1)
 
-        # create example message and go to/from wire to simulate sign/verify
-        m = dns.message.make_query('example', 'a')
-        m.use_tsig(keyring, gsskeyname)
-        w = m.to_wire()
-        # not raising is passing
-        dns.message.from_wire(w, keyring)
+        # simulate case where TKEY message is used to establish the context;
+        # first, the query from the client
+        tkey_message = dns.message.make_query(keyname, 'tkey', 'any')
+
+        # create a response, TKEY and turn it into bytes, simulating the server
+        # sending the response to the query
+        tkey_response = dns.message.make_response(tkey_message)
+        key = base64.b64decode('KEYKEYKEYKEYKEYKEYKEYKEYKEYKEYKEYKEY')
+        tkey = dns.rdtypes.ANY.TKEY.TKEY(dns.rdataclass.ANY,
+                                         dns.rdatatype.TKEY,
+                                         dns.name.from_text('gss-tsig.'),
+                                         1594203795, 1594206664,
+                                         3, 0, key)
+
+        # add the TKEY answer and sign it
+        tkey_response.set_rcode(dns.rcode.NOERROR)
+        tkey_response.answer = [
+            dns.rrset.from_rdata(dns.name.from_text(keyname), 0, tkey)]
+        tkey_response.use_tsig(keyring=keyring, keyname=keyname,
+                               algorithm=dns.tsig.GSS_TSIG)
+
+        # "send" it to the client
+        tkey_wire = tkey_response.to_wire()
+
+        # grab the response from the "server" and simulate the client side
+        dns.message.from_wire(tkey_wire, keyring)
 
         # assertions to make sure the "gssapi" functions were called
         gssapi_context_mock.get_signature.assert_called()
         self.assertEqual(gssapi_context_mock.get_signature.call_count, 1)
         gssapi_context_mock.verify_signature.assert_called()
         self.assertEqual(gssapi_context_mock.verify_signature.call_count, 2)
+        gssapi_context_mock.step.assert_called()
+        self.assertEqual(gssapi_context_mock.step.call_count, 1)
+
+        # create example message and go to/from wire to simulate sign/verify
+        # of regular messages
+        a_message = dns.message.make_query('example', 'a')
+        a_message.use_tsig(keyring, gsskeyname)
+        a_wire = a_message.to_wire()
+        # not raising is passing
+        dns.message.from_wire(a_wire, keyring)
+
+        # assertions to make sure the "gssapi" functions were called again
+        gssapi_context_mock.get_signature.assert_called()
+        self.assertEqual(gssapi_context_mock.get_signature.call_count, 2)
+        gssapi_context_mock.verify_signature.assert_called()
+        self.assertEqual(gssapi_context_mock.verify_signature.call_count, 3)
 
     def test_sign_and_validate(self):
         m = dns.message.make_query('example', 'a')

@@ -89,6 +89,12 @@ class GSSTSig:
     def update(self, data):
         self.data += data
 
+    def handle_auth_data(self, token):
+        # used to allow the client to complete the GSSAPI negotiation
+        # before attempting to verify the signed response to a TKEY
+        # message exchange
+        return self.gssapi_context.step(token)
+
     def digest(self):
         # defer to the GSSAPI function to sign
         return self.gssapi_context.get_signature(self.data)
@@ -97,8 +103,8 @@ class GSSTSig:
         # defer to the GSSAPI function to verify
         return self.gssapi_context.verify_signature(self.data, mac)
 
-# TSIG Algorithms
 
+# TSIG Algorithms
 HMAC_MD5 = dns.name.from_text("HMAC-MD5.SIG-ALG.REG.INT")
 HMAC_SHA1 = dns.name.from_text("hmac-sha1")
 HMAC_SHA224 = dns.name.from_text("hmac-sha224")
@@ -170,19 +176,27 @@ def _maybe_start_digest(key, mac, multi):
         return None
 
 
+def _maybe_handle_auth_data(ctx, key, auth_data):
+    """Handle a potential auth step required before being able to handle a
+    negotiated TSIG - e.g. if a response to a TKEY query using GSSAPI, where
+    the TKEY 'data' field must be incorporated into the local context first.
+
+    @:rtype: Nothing
+    """
+    if auth_data:
+        keyalg = _get_keyalg(key)
+        if keyalg == GSSTSig:
+            ctx.handle_auth_data(auth_data)
+
+
 def _verify_mac_for_context(ctx, key, expected):
     """Verifies a MAC for the specified context and key.
 
     @raises BadSignature: I{expected} does not match expected TSIG
     """
 
-    try:
-        digestmod = _hashes[key.algorithm]
-    except KeyError:
-        raise NotImplementedError(f"TSIG algorithm {key.algorithm} " +
-                                  "is not supported")
-
-    if digestmod == GSSTSig:
+    keyalg = _get_keyalg(key)
+    if keyalg == GSSTSig:
         try:
             ctx.verify(expected)
         except Exception:
@@ -214,7 +228,7 @@ def sign(wire, key, rdata, time=None, request_mac=None, ctx=None, multi=False):
 
 
 def validate(wire, key, owner, rdata, now, request_mac, tsig_start, ctx=None,
-             multi=False):
+             multi=False, auth_data=None):
     """Validate the specified TSIG rdata against the other input parameters.
 
     @raises FormError: The TSIG is badly formed.
@@ -246,9 +260,18 @@ def validate(wire, key, owner, rdata, now, request_mac, tsig_start, ctx=None,
     if key.algorithm != rdata.algorithm:
         raise BadAlgorithm
     ctx = _digest(new_wire, key, rdata, None, request_mac, ctx, multi)
+    if auth_data:
+        _maybe_handle_auth_data(ctx, key, auth_data)
     _verify_mac_for_context(ctx, key, rdata.mac)
     return _maybe_start_digest(key, rdata.mac, multi)
 
+
+def _get_keyalg(key):
+    try:
+        return _hashes[key.algorithm]
+    except KeyError:
+        raise NotImplementedError(f"TSIG algorithm {key.algorithm} " +
+                                  "is not supported")
 
 def get_context(key):
     """Returns an HMAC context for the specified key.
@@ -257,16 +280,11 @@ def get_context(key):
     @raises NotImplementedError: I{algorithm} is not supported
     """
 
-    try:
-        digestmod = _hashes[key.algorithm]
-    except KeyError:
-        raise NotImplementedError(f"TSIG algorithm {key.algorithm} " +
-                                  "is not supported")
-
-    if digestmod == GSSTSig:
+    keyalg = _get_keyalg(key)
+    if keyalg == GSSTSig:
         return GSSTSig(key.secret)
     else:
-        return hmac.new(key.secret, digestmod=digestmod)
+        return hmac.new(key.secret, digestmod=keyalg)
 
 
 class Key:

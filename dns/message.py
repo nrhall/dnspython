@@ -132,6 +132,7 @@ class Message:
         self.origin = None
         self.tsig_ctx = None
         self.index = {}
+        self.auth_data = None
 
     @property
     def question(self):
@@ -934,7 +935,8 @@ class _WireReader:
                                       self.message.request_mac,
                                       rr_start,
                                       self.message.tsig_ctx,
-                                      self.multi)
+                                      self.multi,
+                                      self.message.auth_data)
                 self.message.tsig = dns.rrset.from_rdata(absolute_name, 0, rd)
             else:
                 rrset = self.message.find_rrset(section, name,
@@ -945,6 +947,11 @@ class _WireReader:
                     if ttl > 0x7fffffff:
                         ttl = 0
                     rrset.add(rd, ttl)
+
+                # if this is a TKEY response, save the associated auth data
+                # for later processing (e.g. gss-tsig)
+                if rdtype == dns.rdatatype.TKEY:
+                    self.message.auth_data = rd.key
 
     def read(self):
         """Read a wire format DNS message and build a dns.message.Message
