@@ -95,13 +95,45 @@ class GSSTSig:
         # message exchange
         return self.gssapi_context.step(token)
 
-    def digest(self):
+    def sign(self):
         # defer to the GSSAPI function to sign
         return self.gssapi_context.get_signature(self.data)
 
-    def verify(self, mac):
-        # defer to the GSSAPI function to verify
-        return self.gssapi_context.verify_signature(self.data, mac)
+    def verify(self, expected):
+        try:
+            # defer to the GSSAPI function to verify
+            return self.gssapi_context.verify_signature(self.data, expected)
+        except Exception:
+            # note the usage of a bare exception
+            raise BadSignature
+
+
+class HMACTSig:
+    """
+    HMAC TSIG implementation.  This uses the HMAC python module to handle the
+    sign/verify operations.
+    """
+    def __init__(self, key, digestmod):
+        # create the HMAC context
+        self.hmac_context = hmac.new(key, digestmod=digestmod)
+        self.name = self.hmac_context.name
+
+    def update(self, data):
+        return self.hmac_context.update(data)
+
+    def handle_auth_data(self, token):
+        # not required for HMAC types
+        pass
+
+    def sign(self):
+        # defer to the HMAC digest() function for that digestmod
+        return self.hmac_context.digest()
+
+    def verify(self, expected):
+        # re-digest and compare the results
+        mac = self.hmac_context.digest()
+        if not hmac.compare_digest(mac, expected):
+            raise BadSignature
 
 
 # TSIG Algorithms
@@ -118,7 +150,6 @@ _hashes = {
     HMAC_SHA256: hashlib.sha256,
     HMAC_SHA384: hashlib.sha384,
     HMAC_SHA512: hashlib.sha512,
-    GSS_TSIG: GSSTSig,
     HMAC_SHA1: hashlib.sha1,
     HMAC_MD5: hashlib.md5,
 }
@@ -176,38 +207,6 @@ def _maybe_start_digest(key, mac, multi):
         return None
 
 
-def _maybe_handle_auth_data(ctx, key, auth_data):
-    """Handle a potential auth step required before being able to handle a
-    negotiated TSIG - e.g. if a response to a TKEY query using GSSAPI, where
-    the TKEY 'data' field must be incorporated into the local context first.
-
-    @:rtype: Nothing
-    """
-    if auth_data:
-        keyalg = _get_keyalg(key)
-        if keyalg == GSSTSig:
-            ctx.handle_auth_data(auth_data)
-
-
-def _verify_mac_for_context(ctx, key, expected):
-    """Verifies a MAC for the specified context and key.
-
-    @raises BadSignature: I{expected} does not match expected TSIG
-    """
-
-    keyalg = _get_keyalg(key)
-    if keyalg == GSSTSig:
-        try:
-            ctx.verify(expected)
-        except Exception:
-            # note the usage of a bare exception
-            raise BadSignature
-    else:
-        mac = ctx.digest()
-        if not hmac.compare_digest(mac, expected):
-            raise BadSignature
-
-
 def sign(wire, key, rdata, time=None, request_mac=None, ctx=None, multi=False):
     """Return a (tsig_rdata, mac, ctx) tuple containing the HMAC TSIG rdata
     for the input parameters, the HMAC MAC calculated by applying the
@@ -218,13 +217,13 @@ def sign(wire, key, rdata, time=None, request_mac=None, ctx=None, multi=False):
     """
 
     ctx = _digest(wire, key, rdata, time, request_mac, ctx, multi)
-    mac = ctx.digest()
+    mac = ctx.sign()
     tsig = dns.rdtypes.ANY.TSIG.TSIG(dns.rdataclass.ANY, dns.rdatatype.TSIG,
                                      key.algorithm, time, rdata.fudge, mac,
                                      rdata.original_id, rdata.error,
                                      rdata.other)
 
-    return (tsig, _maybe_start_digest(key, mac, multi))
+    return tsig, _maybe_start_digest(key, mac, multi)
 
 
 def validate(wire, key, owner, rdata, now, request_mac, tsig_start, ctx=None,
@@ -261,17 +260,10 @@ def validate(wire, key, owner, rdata, now, request_mac, tsig_start, ctx=None,
         raise BadAlgorithm
     ctx = _digest(new_wire, key, rdata, None, request_mac, ctx, multi)
     if auth_data:
-        _maybe_handle_auth_data(ctx, key, auth_data)
-    _verify_mac_for_context(ctx, key, rdata.mac)
+        ctx.handle_auth_data(auth_data)
+    ctx.verify(rdata.mac)
     return _maybe_start_digest(key, rdata.mac, multi)
 
-
-def _get_keyalg(key):
-    try:
-        return _hashes[key.algorithm]
-    except KeyError:
-        raise NotImplementedError(f"TSIG algorithm {key.algorithm} " +
-                                  "is not supported")
 
 def get_context(key):
     """Returns an HMAC context for the specified key.
@@ -280,11 +272,16 @@ def get_context(key):
     @raises NotImplementedError: I{algorithm} is not supported
     """
 
-    keyalg = _get_keyalg(key)
-    if keyalg == GSSTSig:
+    if key.algorithm == GSS_TSIG:
         return GSSTSig(key.secret)
     else:
-        return hmac.new(key.secret, digestmod=keyalg)
+        try:
+            digestmod = _hashes[key.algorithm]
+        except KeyError:
+            raise NotImplementedError(f"TSIG algorithm {key.algorithm} " +
+                                      "is not supported")
+
+        return HMACTSig(key.secret, digestmod=digestmod)
 
 
 class Key:
