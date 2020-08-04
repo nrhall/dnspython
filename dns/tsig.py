@@ -72,7 +72,7 @@ class PeerBadTruncation(PeerError):
     """The peer didn't like amount of truncation in the TSIG we sent"""
 
 
-class GSSTSig:
+class GSSTSigContext:
     """
     GSS-TSIG TSIG implementation.  This uses the GSS-API context established
     in the TKEY message handshake to sign messages using GSS-API message
@@ -102,7 +102,7 @@ class GSSTSig:
             raise BadSignature
 
 
-class HMACTSig:
+class HMACTSigContext:
     """
     HMAC TSIG implementation.  This uses the HMAC python module to handle the
     sign/verify operations.
@@ -127,7 +127,6 @@ class HMACTSig:
 
 
 # TSIG Algorithms
-
 HMAC_MD5 = dns.name.from_text("HMAC-MD5.SIG-ALG.REG.INT")
 HMAC_SHA1 = dns.name.from_text("hmac-sha1")
 HMAC_SHA224 = dns.name.from_text("hmac-sha224")
@@ -158,7 +157,7 @@ def _digest(wire, key, rdata, time=None, request_mac=None, ctx=None,
 
     first = not (ctx and multi)
     if first:
-        ctx = get_context(key)
+        ctx = key.get_context()
         if request_mac:
             ctx.update(struct.pack('!H', len(request_mac)))
             ctx.update(request_mac)
@@ -190,13 +189,12 @@ def _maybe_start_digest(key, mac, multi):
     @rtype: hmac.HMAC object
     """
     if multi:
-        ctx = get_context(key)
+        ctx = key.get_context()
         ctx.update(struct.pack('!H', len(mac)))
         ctx.update(mac)
         return ctx
     else:
         return None
-
 
 def sign(wire, key, rdata, time=None, request_mac=None, ctx=None, multi=False):
     """Return a (tsig_rdata, mac, ctx) tuple containing the HMAC TSIG rdata
@@ -254,25 +252,7 @@ def validate(wire, key, owner, rdata, now, request_mac, tsig_start, ctx=None,
     return _maybe_start_digest(key, rdata.mac, multi)
 
 
-def get_context(key):
-    """Returns an HMAC context for the specified key.
-
-    @rtype: HMAC context
-    @raises NotImplementedError: I{algorithm} is not supported
-    """
-
-    if key.algorithm == GSS_TSIG:
-        return GSSTSig(key.secret)
-    else:
-        try:
-            digestmod = _hashes[key.algorithm]
-        except KeyError:
-            raise NotImplementedError(f"TSIG algorithm {key.algorithm} " +
-                                      "is not supported")
-        return HMACTSig(key.secret, digestmod=digestmod)
-
-
-class Key:
+class HMACTSigKey:
     def __init__(self, name, secret, algorithm=default_algorithm):
         if isinstance(name, str):
             name = dns.name.from_text(name)
@@ -284,8 +264,52 @@ class Key:
             algorithm = dns.name.from_text(algorithm)
         self.algorithm = algorithm
 
+        try:
+            self.digestmod = _hashes[self.algorithm]
+        except KeyError:
+            raise NotImplementedError(f"TSIG algorithm {self.algorithm} " +
+                                      "is not supported")
+
     def __eq__(self, other):
-        return (isinstance(other, Key) and
+        return (isinstance(other, HMACTSigKey) and
                 self.name == other.name and
                 self.secret == other.secret and
                 self.algorithm == other.algorithm)
+
+    def get_context(self):
+        return HMACTSigContext(self.secret, digestmod=self.digestmod)
+
+
+class GSSTSigKey:
+    def __init__(self, name, gssapi_context):
+        if isinstance(name, str):
+            name = dns.name.from_text(name)
+        self.name = name
+        self.algorithm = GSS_TSIG
+        self.gssapi_context = gssapi_context
+        self.token = None
+
+    def __call__(self, message):
+        # if the message is a TKEY type, absorb the key material into
+        # the context using step(); this is used to allow the client to
+        # complete the GSSAPI negotiation before attempting to verify the
+        # signed response to a TKEY message exchange
+        try:
+            rrset = message.find_rrset(message.answer, self.name,
+                                       dns.rdataclass.ANY, dns.rdatatype.TKEY)
+            if rrset:
+                token = rrset[0].key
+                self.token = self.gssapi_context.step(token)
+        except KeyError:
+            # TKEY message wasn't found, no need to process this message
+            pass
+
+        return self
+
+    def __eq__(self, other):
+        return (isinstance(other, GSSTSigKey) and
+                self.name == other.name and
+                self.gssapi_context == other.gssapi_context)
+
+    def get_context(self):
+        return GSSTSigContext(self.gssapi_context)

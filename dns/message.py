@@ -517,7 +517,7 @@ class Message:
         only used if *keyring* is a ``dict``, and the key entry is a ``bytes``.
         """
 
-        if isinstance(keyring, dns.tsig.Key):
+        if isinstance(keyring, dns.tsig.HMACTSigKey):
             self.keyring = keyring
         else:
             if isinstance(keyname, str):
@@ -526,7 +526,7 @@ class Message:
                 keyname = next(iter(keyring))
             key = keyring[keyname]
             if isinstance(key, bytes):
-                key = dns.tsig.Key(keyname, key, algorithm)
+                key = dns.tsig.HMACTSigKey(keyname, key, algorithm)
             self.keyring = key
         if original_id is None:
             original_id = self.id
@@ -919,7 +919,9 @@ class _WireReader:
                 if isinstance(self.keyring, dict):
                     key = self.keyring.get(absolute_name)
                     if isinstance(key, bytes):
-                        key = dns.tsig.Key(absolute_name, key, rd.algorithm)
+                        key = dns.tsig.HMACTSigKey(absolute_name, key, rd.algorithm)
+                    elif callable(key):
+                        key = key(self.message)
                 else:
                     key = self.keyring
                 if key is None:

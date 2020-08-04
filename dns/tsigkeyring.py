@@ -33,10 +33,10 @@ def from_text(textring):
     for (name, value) in textring.items():
         name = dns.name.from_text(name)
         if isinstance(value, str):
-            keyring[name] = dns.tsig.Key(name, value).secret
+            keyring[name] = dns.tsig.HMACTSigKey(name, value).secret
         else:
             (algorithm, secret) = value
-            keyring[name] = dns.tsig.Key(name, secret, algorithm)
+            keyring[name] = dns.tsig.HMACTSigKey(name, secret, algorithm)
     return keyring
 
 
@@ -55,10 +55,13 @@ def to_text(keyring):
         if isinstance(key, bytes):
             textring[name] = b64encode(key)
         else:
-            if isinstance(key.secret, bytes):
-                text_secret = b64encode(key.secret)
-            else:
-                text_secret = str(key.secret)
+            if isinstance(key, dns.tsig.HMACTSigKey):
+                if isinstance(key.secret, bytes):
+                    text_secret = b64encode(key.secret)
+                else:
+                    text_secret = str(key.secret)
+            elif isinstance(key, dns.tsig.GSSTSigKey):
+                text_secret = repr(key)
 
             textring[name] = (key.algorithm.to_text(), text_secret)
     return textring

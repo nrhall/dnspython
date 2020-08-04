@@ -18,7 +18,7 @@ old_text_keyring = {
     'keyname.' : 'NjHwPsMKjdN++dOfE5iAiQ=='
 }
 
-key = dns.tsig.Key('keyname.', 'NjHwPsMKjdN++dOfE5iAiQ==')
+key = dns.tsig.HMACTSigKey('keyname.', 'NjHwPsMKjdN++dOfE5iAiQ==')
 
 rich_keyring = { key.name : key }
 

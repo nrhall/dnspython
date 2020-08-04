@@ -179,10 +179,10 @@ class Renderer:
 
         s = self.output.getvalue()
 
-        if isinstance(secret, dns.tsig.Key):
+        if isinstance(secret, dns.tsig.HMACTSigKey):
             key = secret
         else:
-            key = dns.tsig.Key(keyname, secret, algorithm)
+            key = dns.tsig.HMACTSigKey(keyname, secret, algorithm)
         tsig = dns.message.Message._make_tsig(keyname, algorithm, 0, fudge,
                                               b'', id, tsig_error, other_data)
         (tsig, _) = dns.tsig.sign(s, key, tsig[0], int(time.time()),
@@ -202,10 +202,10 @@ class Renderer:
 
         s = self.output.getvalue()
 
-        if isinstance(secret, dns.tsig.Key):
+        if isinstance(secret, dns.tsig.HMACTSigKey):
             key = secret
         else:
-            key = dns.tsig.Key(keyname, secret, algorithm)
+            key = dns.tsig.HMACTSigKey(keyname, secret, algorithm)
         tsig = dns.message.Message._make_tsig(keyname, algorithm, 0, fudge,
                                               b'', id, tsig_error, other_data)
         (tsig, ctx) = dns.tsig.sign(s, key, tsig[0], int(time.time()),
