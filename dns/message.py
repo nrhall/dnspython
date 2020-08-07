@@ -488,8 +488,8 @@ class Message:
         *key*, a ``dns.tsig.Key`` is the key to use.  If a key is specified,
         the *keyring* and *algorithm* fields are not used.
 
-        *keyring*, a ``dict`` or ``dns.tsig.Key``, is either the TSIG
-        keyring or key to use.
+        *keyring*, a ``dict``, ``callable`` or ``dns.tsig.Key``, is either
+        the TSIG keyring or key to use.
 
         The format of a keyring dict is a mapping from TSIG key name, as
         ``dns.name.Name`` to ``dns.tsig.Key`` or a TSIG secret, a ``bytes``.
@@ -497,7 +497,9 @@ class Message:
         used will be the first key in the *keyring*.  Note that the order of
         keys in a dictionary is not defined, so applications should supply a
         keyname when a ``dict`` keyring is used, unless they know the keyring
-        contains only one key.
+        contains only one key.  If a ``callable`` keyring is specified, the
+        callable will be called with the message and the keyname, and is
+        expected to return a key.
 
         *keyname*, a ``dns.name.Name``, ``str`` or ``None``, the name of
         thes TSIG key to use; defaults to ``None``.  If *keyring* is a
@@ -516,6 +518,10 @@ class Message:
         *algorithm*, a ``dns.name.Name``, the TSIG algorithm to use.  This is
         only used if *keyring* is a ``dict``, and the key entry is a ``bytes``.
         """
+
+        # if the keyring is callable, fetch the desired key first
+        if callable(keyring):
+            keyring = keyring(self, keyname)
 
         if isinstance(keyring, dns.tsig.Key):
             self.keyring = keyring
@@ -920,6 +926,8 @@ class _WireReader:
                     key = self.keyring.get(absolute_name)
                     if isinstance(key, bytes):
                         key = dns.tsig.Key(absolute_name, key, rd.algorithm)
+                elif callable(self.keyring):
+                    key = self.keyring(self.message, absolute_name)
                 else:
                     key = self.keyring
                 if key is None:
