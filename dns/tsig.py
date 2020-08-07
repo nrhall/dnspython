@@ -214,7 +214,6 @@ def sign(wire, key, rdata, time=None, request_mac=None, ctx=None, multi=False):
 
     return tsig, _maybe_start_digest(key, mac, multi)
 
-
 def validate(wire, key, owner, rdata, now, request_mac, tsig_start, ctx=None,
              multi=False):
     """Validate the specified TSIG rdata against the other input parameters.
@@ -251,18 +250,42 @@ def validate(wire, key, owner, rdata, now, request_mac, tsig_start, ctx=None,
     ctx.verify(rdata.mac)
     return _maybe_start_digest(key, rdata.mac, multi)
 
+def b64encode(secret):
+    """Convenience function to base64encode a secret"""
+    return base64.encodebytes(secret).decode().rstrip()
 
-class HMACTSigKey:
-    def __init__(self, name, secret, algorithm=default_algorithm):
+
+class Key:
+    def __init__(self, name, algorithm):
         if isinstance(name, str):
             name = dns.name.from_text(name)
         self.name = name
-        if isinstance(secret, str):
-            secret = base64.decodebytes(secret.encode())
-        self.secret = secret
+
         if isinstance(algorithm, str):
             algorithm = dns.name.from_text(algorithm)
         self.algorithm = algorithm
+
+    def get_context(self):
+        raise NotImplementedError
+
+    def to_text(self):
+        raise NotImplementedError
+
+    @classmethod
+    def create(cls, name, value, algorithm=default_algorithm):
+        if isinstance(value, str) or isinstance(value, bytes):
+            return dns.tsig.HMACTSigKey(name, value)
+        else:
+            (algorithm, secret) = value
+            return dns.tsig.HMACTSigKey(name, secret, algorithm)
+
+class HMACTSigKey(Key):
+    def __init__(self, name, secret, algorithm=default_algorithm):
+        super().__init__(name, algorithm)
+
+        if isinstance(secret, str):
+            secret = base64.decodebytes(secret.encode())
+        self.secret = secret
 
         try:
             self.digestmod = _hashes[self.algorithm]
@@ -279,13 +302,14 @@ class HMACTSigKey:
     def get_context(self):
         return HMACTSigContext(self.secret, digestmod=self.digestmod)
 
+    def to_text(self):
+        return dns.tsig.b64encode(self.secret)
 
-class GSSTSigKey:
+
+class GSSTSigKey(Key):
     def __init__(self, name, gssapi_context):
-        if isinstance(name, str):
-            name = dns.name.from_text(name)
-        self.name = name
-        self.algorithm = GSS_TSIG
+        super().__init__(name, GSS_TSIG)
+
         self.gssapi_context = gssapi_context
         self.token = None
 
@@ -313,3 +337,6 @@ class GSSTSigKey:
 
     def get_context(self):
         return GSSTSigContext(self.gssapi_context)
+
+    def to_text(self):
+        return 'GSSTSig'
